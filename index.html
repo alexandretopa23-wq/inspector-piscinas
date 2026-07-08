@@ -572,7 +572,6 @@ async function loadSession(id){
 async function saveSession(sess){
   sess.updatedAt = Date.now();
   hasUnexportedChanges = true;
-  PENDING_SYNC = true; // Marcar para sincronizar con Sheets
   var ok = await kvSet(LS_SESSION_PREFIX+sess.id, JSON.stringify(sess));
   if(!ok){ toast('⚠ Error guardando — exporta un backup por seguridad'); return; }
   var list = await loadSessions();

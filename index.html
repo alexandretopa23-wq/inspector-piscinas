@@ -401,7 +401,7 @@ var PENDING_SYNC = false;
 async function syncToSheets(){
   if(!state.session || !STORAGE_OK || !SHEETS_WEBHOOK_URL) return;
   try{
-    var rows = sessionToRows(state.session);
+    var rows = sessionToRows(state.session, true); // solo ítems respondidos
     var payload = {rows: rows};
     // mode:'no-cors' + Content-Type text/plain evita el preflight OPTIONS que
     // Google Apps Script no soporta correctamente. La respuesta queda "opaca"
@@ -1272,8 +1272,8 @@ function csvEscape(v){
   return v;
 }
 
-function sessionToRows(sess){
-  return ITEMS.map(function(it){
+function sessionToRows(sess, onlyAnswered){
+  var rows = ITEMS.map(function(it){
     var r = sess.responses[it.id] || {};
     return [
       it.id, '', it.cap, it.item, it.enfoque||'', it.prioridad||'',
@@ -1284,6 +1284,10 @@ function sessionToRows(sess){
       r.linkCarpeta||'', r.observaciones||''
     ];
   });
+  if(onlyAnswered){
+    rows = rows.filter(function(row){ return row[10] !== ''; }); // columna 'Estado' (índice 10)
+  }
+  return rows;
 }
 
 function downloadFile(filename, content, mime){

@@ -264,7 +264,18 @@ input,textarea,select{font-family:inherit;}
       </div>
     </div>
     <div class="actions">
+      <button class="iconbtn" id="btnSyncMode" title="Modo de sincronización" style="width:auto;padding:0 10px;font-size:11px;">🔄 <span id="syncModeLabel">Manual</span></button>
       <button class="iconbtn" id="btnHomeTop" title="Inicio">⌂</button>
+    </div>
+  </div>
+  <div id="syncModeMenu" class="hidden" style="position:absolute;top:52px;right:14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:60;overflow:hidden;min-width:180px;">
+    <div class="syncModeOpt" data-mode="manual" style="padding:12px 14px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--border-soft);">
+      <div style="font-weight:700;">Manual</div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">Tú decides cuándo sincronizar cada sección</div>
+    </div>
+    <div class="syncModeOpt" data-mode="auto" style="padding:12px 14px;font-size:13px;cursor:pointer;">
+      <div style="font-weight:700;">Automático</div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">Cada sección se sincroniza sola al completarse</div>
     </div>
   </div>
   <div id="progressWrap" class="hidden">
@@ -392,44 +403,87 @@ var LS_SESSIONS = 'sessions_index';
 var LS_SESSION_PREFIX = 'session_';
 var LS_PREFS = 'prefs';
 
-/* ============ SINCRONIZACIÓN CON GOOGLE SHEETS ============ */
+/* ============ SINCRONIZACIÓN CON GOOGLE SHEETS (por sección) ============ */
 var SHEETS_WEBHOOK_URL = ''; // Se carga desde config.json
 var LAST_SYNC_TIME = 0;
-var SYNC_INTERVAL = 15000; // Sincronizar cada 15 segundos si hay cambios pendientes
-var PENDING_SYNC = false;
+var PENDING_CHAPTER_SYNCS = {}; // cap -> true, secciones con envío pendiente/fallido para reintentar
+var CHAPTER_SYNC_RETRY_INTERVAL = 20000;
 
-async function syncToSheets(){
-  if(!state.session || !STORAGE_OK || !SHEETS_WEBHOOK_URL) return;
+function chapterRows(sess, cap){
+  return ITEMS.filter(function(it){ return it.cap===cap; })
+    .map(function(it){
+      var r = sess.responses[it.id] || {};
+      return [
+        it.id, '', it.cap, it.item, it.enfoque||'', it.prioridad||'',
+        sess.meta.sede, sess.meta.piscina, sess.meta.fecha, sess.meta.responsable,
+        r.estado||'', r.riesgo||'', r.hallazgo||'', r.accion||'', r.respCierre||'',
+        r.fechaCompromiso||'', r.fechaCierre||'', daysRemainingStr(r.fechaCompromiso,r.fechaCierre),
+        (r.avance!=null? r.avance : ''), r.evidenciaActual||'', r.evidenciaCierre||'',
+        r.linkCarpeta||'', r.observaciones||''
+      ];
+    })
+    .filter(function(row){ return row[10] !== ''; }); // solo respondidos
+}
+
+function isChapterComplete(sess, cap){
+  var items = ITEMS.filter(function(it){ return it.cap===cap; });
+  return items.every(function(it){ return sess.responses[it.id] && sess.responses[it.id].estado; });
+}
+
+async function syncChapterToSheets(sess, cap, opts){
+  opts = opts || {};
+  if(!STORAGE_OK || !SHEETS_WEBHOOK_URL) return false;
+  var rows = chapterRows(sess, cap);
+  if(rows.length===0) return false;
   try{
-    var rows = sessionToRows(state.session, true); // solo ítems respondidos
-    var payload = {rows: rows};
-    // mode:'no-cors' + Content-Type text/plain evita el preflight OPTIONS que
-    // Google Apps Script no soporta correctamente. La respuesta queda "opaca"
-    // (no podemos leer el body), pero el servidor SÍ procesa y guarda los datos.
     await fetch(SHEETS_WEBHOOK_URL, {
       method: 'POST',
       mode: 'no-cors',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({rows: rows}),
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
       signal: AbortSignal.timeout(10000)
     });
-    // Con no-cors no podemos confirmar el status real, pero si fetch no lanzó
-    // excepción, la petición llegó al servidor.
-    PENDING_SYNC = false;
+    delete PENDING_CHAPTER_SYNCS[cap];
     LAST_SYNC_TIME = Date.now();
-    var msg = document.getElementById('syncStatus');
-    if(msg){
-      msg.textContent = '↑ Enviado a Sheets hace ' + formatSyncTime(0);
-      msg.style.color = 'var(--c-cumple)';
-      setTimeout(function(){ if(msg) msg.textContent=''; }, 3000);
-    }
+    setChapterSyncBadge(cap, 'ok');
+    if(!opts.silent) toast('↑ Sección sincronizada con Sheets ('+rows.length+' ítems)');
+    return true;
   }catch(e){
-    PENDING_SYNC = true;
-    console.warn('Sync error:', e.message);
-    var msg2 = document.getElementById('syncStatus');
-    if(msg2){ msg2.textContent = '⚠ Sin conexión, reintentando...'; msg2.style.color = 'var(--c-nocumple)'; }
+    PENDING_CHAPTER_SYNCS[cap] = true;
+    console.warn('Sync error (cap: '+cap+'):', e.message);
+    setChapterSyncBadge(cap, 'error');
+    if(!opts.silent) toast('⚠ Sin conexión — se reintentará automáticamente');
+    return false;
   }
 }
+
+function setChapterSyncBadge(cap, status){
+  var ci = CHAPTERS.indexOf(cap);
+  var badge = document.querySelector('.chapter[data-cap="'+ci+'"] .chSyncBadge');
+  if(!badge) return;
+  if(status==='ok'){ badge.textContent = '✓ Sincronizado'; badge.style.color = 'var(--c-cumple)'; }
+  else if(status==='error'){ badge.textContent = '⚠ Reintentando…'; badge.style.color = 'var(--c-nocumple)'; }
+  else if(status==='sending'){ badge.textContent = '↑ Enviando…'; badge.style.color = 'var(--text-faint)'; }
+  clearTimeout(badge._t);
+  if(status==='ok'){ badge._t = setTimeout(function(){ badge.textContent=''; }, 4000); }
+}
+
+// Modo automático: cuando una sección queda 100% diligenciada (o se edita
+// después de estarlo), se sincroniza sola en un solo lote — no ítem por ítem.
+function maybeAutoSyncChapter(cap){
+  if(state.prefs.syncMode !== 'auto') return;
+  if(!isChapterComplete(state.session, cap)) return;
+  setChapterSyncBadge(cap, 'sending');
+  syncChapterToSheets(state.session, cap, {silent:true});
+}
+
+// Reintento periódico solo para secciones que fallaron (offline, etc.)
+setInterval(function(){
+  if(state.view!=='checklist' || !state.session) return;
+  Object.keys(PENDING_CHAPTER_SYNCS).forEach(function(cap){
+    syncChapterToSheets(state.session, cap, {silent:true});
+  });
+}, CHAPTER_SYNC_RETRY_INTERVAL);
 
 function formatSyncTime(ms){
   var now = Date.now();
@@ -438,13 +492,6 @@ function formatSyncTime(ms){
   if(diff < 3600) return 'hace '+Math.floor(diff/60)+'m';
   return 'hace '+Math.floor(diff/3600)+'h';
 }
-
-// Auto-sync cada 15 segundos si hay cambios
-setInterval(function(){
-  if(PENDING_SYNC && state.view==='checklist' && state.session){
-    syncToSheets();
-  }
-}, SYNC_INTERVAL);
 
 
 /* ============ STORAGE HELPERS (memoria local del dispositivo) ============
@@ -873,6 +920,7 @@ function renderChecklist(){
           '<div class="chMeta">'+items.length+' ítems</div>'+
         '</div>'+
         '<div class="chRight">'+
+          '<div class="chSyncBadge" style="font-size:10px;font-weight:600;"></div>'+
           '<div class="chBadge '+(complete?'complete':(answered>0?'partial':'empty'))+'">'+answered+'/'+items.length+'</div>'+
           '<div class="chArrow">›</div>'+
         '</div>'+
@@ -989,6 +1037,12 @@ function renderChapterBody(ci, forceShowAll){
     '<button class="bulkBtn" data-bulk="Cumple" data-cap="'+ci+'">✓ Marcar todo Cumple</button>'+
     '<button class="bulkBtn" data-bulk="No aplica" data-cap="'+ci+'">— Marcar todo No aplica</button>'+
   '</div>';
+  var answeredInCap = items.filter(function(it){ return sess.responses[it.id] && sess.responses[it.id].estado; }).length;
+  if(state.prefs.syncMode==='manual' && answeredInCap>0){
+    html += '<div class="chapterBulkRow">'+
+      '<button class="bulkBtn" data-sync-chapter="'+ci+'" style="width:100%;color:var(--accent);border-color:var(--accent-dim);">↑ Sincronizar esta sección con Sheets ('+answeredInCap+' ítems)</button>'+
+    '</div>';
+  }
 
   if(visibleItems.length===0){
     html += '<div class="emptyState" style="padding:14px;">Todos los ítems de este capítulo ya fueron diligenciados. Desactiva "Solo pendientes" para revisarlos.</div>';
@@ -1009,7 +1063,7 @@ function renderChapterBody(ci, forceShowAll){
     };
   }
 
-  body.querySelectorAll('.bulkBtn').forEach(function(btn){
+  body.querySelectorAll('.bulkBtn[data-bulk]').forEach(function(btn){
     btn.onclick = function(e){
       e.stopPropagation();
       var estadoVal = btn.getAttribute('data-bulk');
@@ -1024,9 +1078,21 @@ function renderChapterBody(ci, forceShowAll){
       renderChapterBody(ci);
       updateChapterBadge(ci);
       renderChecklistHeader();
+      maybeAutoSyncChapter(cap);
       toast('Capítulo actualizado');
     };
   });
+  var syncBtn = body.querySelector('[data-sync-chapter]');
+  if(syncBtn){
+    syncBtn.onclick = function(e){
+      e.stopPropagation();
+      syncBtn.textContent = '↑ Enviando…';
+      syncBtn.disabled = true;
+      syncChapterToSheets(sess, cap).then(function(){
+        renderChapterBody(ci);
+      });
+    };
+  }
 }
 
 function riskSuggestion(prioridad){
@@ -1169,6 +1235,7 @@ function wireSingleItem(itemEl, it){
         if(!showExtra){ r.riesgo = 'Sin riesgo'; }
         saveSession(sess);
         refreshAfterAnswer(itemEl, it, r);
+        maybeAutoSyncChapter(it.cap);
       };
     });
   }
@@ -1344,6 +1411,39 @@ async function exportAllJson(){
 
 /* ============ GLOBAL WIRING ============ */
 document.getElementById('btnHomeTop').onclick = function(){ renderHome(); };
+
+function updateSyncModeUI(){
+  var label = document.getElementById('syncModeLabel');
+  if(label) label.textContent = state.prefs.syncMode==='auto' ? 'Automático' : 'Manual';
+  document.querySelectorAll('.syncModeOpt').forEach(function(opt){
+    opt.style.background = opt.getAttribute('data-mode')===state.prefs.syncMode ? 'var(--panel-2)' : '';
+  });
+}
+document.getElementById('btnSyncMode').onclick = function(e){
+  e.stopPropagation();
+  document.getElementById('syncModeMenu').classList.toggle('hidden');
+};
+document.querySelectorAll('.syncModeOpt').forEach(function(opt){
+  opt.onclick = function(){
+    state.prefs.syncMode = opt.getAttribute('data-mode');
+    savePrefs(state.prefs);
+    updateSyncModeUI();
+    document.getElementById('syncModeMenu').classList.add('hidden');
+    if(state.view==='checklist'){
+      document.querySelectorAll('.chapter.open').forEach(function(c){
+        renderChapterBody(c.getAttribute('data-cap'));
+      });
+    }
+    toast(state.prefs.syncMode==='auto' ? 'Modo automático activado' : 'Modo manual activado');
+  };
+});
+document.addEventListener('click', function(e){
+  var menu = document.getElementById('syncModeMenu');
+  if(menu && !menu.classList.contains('hidden') && !menu.contains(e.target) && e.target.id!=='btnSyncMode'){
+    menu.classList.add('hidden');
+  }
+});
+
 onlyPendingToggle.onchange = function(){
   state.prefs.onlyPending = onlyPendingToggle.checked;
   savePrefs(state.prefs);
@@ -1373,7 +1473,9 @@ if('serviceWorker' in navigator){
   STORAGE_OK = await testStorage();
   STORAGE_PERSISTED = await requestPersistence();
   state.prefs = await loadPrefs();
+  if(!state.prefs.syncMode) state.prefs.syncMode = 'manual';
   onlyPendingToggle.checked = !!state.prefs.onlyPending;
+  updateSyncModeUI();
   renderHome();
 })();
 })();

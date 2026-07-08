@@ -735,6 +735,7 @@ async function renderHome(){
           '<div class="t1">'+esc(s.sede||'(sin sede)')+' · '+esc(s.piscina||'(sin piscina)')+'</div>'+
           '<div class="t2">'+esc(s.fecha||'')+' · '+esc(s.responsable||'—')+' · '+s.answered+'/'+s.total+'</div>'+
         '</div>'+
+        '<button class="cardDeleteBtn" data-delete-id="'+s.id+'" title="Eliminar inspección" style="flex:none;background:none;border:none;color:var(--c-nocumple);font-size:16px;padding:6px;">🗑</button>'+
         '<div class="chev">›</div>'+
       '</div>';
     });
@@ -753,6 +754,18 @@ async function renderHome(){
   document.getElementById('newInspectionBtn').onclick = function(){ openSetupModal(null); };
   homeView.querySelectorAll('.sessionCard').forEach(function(card){
     card.onclick = function(){ openSession(card.getAttribute('data-id')); };
+  });
+  homeView.querySelectorAll('.cardDeleteBtn').forEach(function(btn){
+    btn.onclick = async function(e){
+      e.stopPropagation();
+      var id = btn.getAttribute('data-delete-id');
+      var card = btn.closest('.sessionCard');
+      var label = card.querySelector('.t1').textContent;
+      if(!confirm('¿Eliminar por completo la inspección "'+label+'"?\n\nSe borrarán TODAS las respuestas guardadas en este dispositivo. Esta acción no se puede deshacer.\n\nSi ya la sincronizaste con Sheets, esos datos quedan intactos allá — solo se borra la copia local.')) return;
+      await deleteSession(id);
+      toast('Inspección eliminada');
+      renderHome();
+    };
   });
   var b1 = document.getElementById('btnExportAllCsv');
   if(b1) b1.onclick = exportAllCsv;
@@ -901,6 +914,17 @@ function renderChecklist(){
       '<div id="syncStatus" style="font-size:10px;color:var(--text-faint);margin-top:3px;"></div>'+
     '</div>'+
     '<button class="shBack" id="btnEditMeta">✎</button>'+
+    '<button class="shBack" id="btnDangerMenu" title="Reiniciar o eliminar" style="color:var(--c-nocumple);">⋮</button>'+
+  '</div>'+
+  '<div id="dangerMenu" class="hidden" style="position:absolute;top:52px;right:14px;background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.5);z-index:60;overflow:hidden;min-width:220px;">'+
+    '<div class="dangerOpt" data-action="reset" style="padding:12px 14px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--border-soft);">'+
+      '<div style="font-weight:700;">↺ Reiniciar progreso</div>'+
+      '<div style="font-size:11px;color:var(--text-faint);margin-top:2px;">Borra todas las respuestas, conserva sede/piscina/fecha</div>'+
+    '</div>'+
+    '<div class="dangerOpt" data-action="delete" style="padding:12px 14px;font-size:13px;cursor:pointer;color:var(--c-nocumple);">'+
+      '<div style="font-weight:700;">🗑 Eliminar inspección</div>'+
+      '<div style="font-size:11px;color:var(--text-faint);margin-top:2px;">Borra todo y vuelve al inicio</div>'+
+    '</div>'+
   '</div>';
   html += '<div id="searchWrap" style="position:relative;margin-bottom:12px;">'+
     '<input id="searchInput" placeholder="🔍 Buscar ítem por texto o ID (ej. CHK-045, turbidez…)" style="width:100%;background:var(--panel);border:1px solid var(--border-soft);color:var(--text);border-radius:10px;padding:11px 12px;font-size:13px;">'+
@@ -931,6 +955,40 @@ function renderChecklist(){
   checklistView.innerHTML = html;
   document.getElementById('btnBackHome').onclick = function(){ renderHome(); };
   document.getElementById('btnEditMeta').onclick = function(){ openSetupModal(state.session.meta); };
+
+  document.getElementById('btnDangerMenu').onclick = function(e){
+    e.stopPropagation();
+    document.getElementById('dangerMenu').classList.toggle('hidden');
+  };
+  document.addEventListener('click', function(e){
+    var menu = document.getElementById('dangerMenu');
+    if(menu && !menu.classList.contains('hidden') && !menu.contains(e.target) && e.target.id!=='btnDangerMenu'){
+      menu.classList.add('hidden');
+    }
+  });
+  document.querySelectorAll('.dangerOpt').forEach(function(opt){
+    opt.onclick = async function(){
+      document.getElementById('dangerMenu').classList.add('hidden');
+      var sess = state.session;
+      var label = sess.meta.sede+' · '+sess.meta.piscina;
+      var action = opt.getAttribute('data-action');
+
+      if(action==='reset'){
+        if(!confirm('¿Reiniciar el progreso de "'+label+'"?\n\nSe borrarán las '+Object.keys(sess.responses).length+' respuestas ya diligenciadas. Sede, piscina, fecha y responsable se conservan.\n\nEsta acción no se puede deshacer.')) return;
+        if(!confirm('Confirma una vez más: esto borra TODAS las respuestas de esta inspección. ¿Continuar?')) return;
+        sess.responses = {};
+        await saveSession(sess);
+        renderChecklist();
+        toast('Progreso reiniciado');
+      } else if(action==='delete'){
+        if(!confirm('¿Eliminar por completo la inspección "'+label+'"?\n\nEsto borra la inspección entera de este dispositivo. Esta acción no se puede deshacer.\n\nSi ya sincronizaste ítems con Sheets, esos datos quedan intactos allá.')) return;
+        if(!confirm('Confirma una vez más: esto elimina la inspección completa. ¿Continuar?')) return;
+        await deleteSession(sess.id);
+        toast('Inspección eliminada');
+        renderHome();
+      }
+    };
+  });
   checklistView.querySelectorAll('.chapterHead').forEach(function(head){
     head.onclick = function(){
       var chapter = head.parentElement;

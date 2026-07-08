@@ -399,32 +399,35 @@ var SYNC_INTERVAL = 15000; // Sincronizar cada 15 segundos si hay cambios pendie
 var PENDING_SYNC = false;
 
 async function syncToSheets(){
-  if(!state.session || !STORAGE_OK) return;
+  if(!state.session || !STORAGE_OK || !SHEETS_WEBHOOK_URL) return;
   try{
     var rows = sessionToRows(state.session);
     var payload = {rows: rows};
-    var response = await fetch(SHEETS_WEBHOOK_URL, {
+    // mode:'no-cors' + Content-Type text/plain evita el preflight OPTIONS que
+    // Google Apps Script no soporta correctamente. La respuesta queda "opaca"
+    // (no podemos leer el body), pero el servidor SÍ procesa y guarda los datos.
+    await fetch(SHEETS_WEBHOOK_URL, {
       method: 'POST',
+      mode: 'no-cors',
       body: JSON.stringify(payload),
-      headers: {'Content-Type': 'application/json'},
+      headers: {'Content-Type': 'text/plain;charset=utf-8'},
       signal: AbortSignal.timeout(10000)
     });
-    if(response.ok){
-      PENDING_SYNC = false;
-      LAST_SYNC_TIME = Date.now();
-      var msg = document.getElementById('syncStatus');
-      if(msg){
-        msg.textContent = '✓ Sincronizado con Sheets hace ' + formatSyncTime(0);
-        msg.style.color = 'var(--c-cumple)';
-        setTimeout(function(){ if(msg) msg.textContent=''; }, 3000);
-      }
-    } else {
-      PENDING_SYNC = true;
-      console.warn('Sync failed:', response.status);
+    // Con no-cors no podemos confirmar el status real, pero si fetch no lanzó
+    // excepción, la petición llegó al servidor.
+    PENDING_SYNC = false;
+    LAST_SYNC_TIME = Date.now();
+    var msg = document.getElementById('syncStatus');
+    if(msg){
+      msg.textContent = '↑ Enviado a Sheets hace ' + formatSyncTime(0);
+      msg.style.color = 'var(--c-cumple)';
+      setTimeout(function(){ if(msg) msg.textContent=''; }, 3000);
     }
   }catch(e){
     PENDING_SYNC = true;
     console.warn('Sync error:', e.message);
+    var msg2 = document.getElementById('syncStatus');
+    if(msg2){ msg2.textContent = '⚠ Sin conexión, reintentando...'; msg2.style.color = 'var(--c-nocumple)'; }
   }
 }
 

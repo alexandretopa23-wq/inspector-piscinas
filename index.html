@@ -1554,7 +1554,9 @@ onlyPendingToggle.onchange = function(){
 var STORAGE_PERSISTED = false;
 if('serviceWorker' in navigator){
   window.addEventListener('load', function(){
-    navigator.serviceWorker.register('sw.js').catch(function(){ /* no-op si se abre como file:// */ });
+    navigator.serviceWorker.register('sw.js', {updateViaCache: 'none'}).then(function(reg){
+      reg.update(); // fuerza a revisar si hay una versión nueva del service worker de una vez
+    }).catch(function(){ /* no-op si se abre como file:// */ });
   });
 }
 (async function init(){

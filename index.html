@@ -409,6 +409,8 @@ var LAST_SYNC_TIME = 0;
 var PENDING_CHAPTER_SYNCS = {}; // cap -> true, secciones con envío pendiente/fallido para reintentar
 var SYNCING_CHAPTERS = {}; // cap -> true, sección con un envío EN CURSO ahora mismo
 var DIRTY_DURING_SYNC = {}; // cap -> true, hubo ediciones nuevas mientras el envío estaba en curso
+var RETRY_COUNT = {}; // cap -> número de reintentos fallidos consecutivos
+var MAX_AUTO_RETRIES = 3; // tras esto, deja de reintentar solo (evita reenvíos infinitos)
 var CHAPTER_SYNC_RETRY_INTERVAL = 20000;
 
 function chapterRows(sess, cap){
@@ -456,18 +458,30 @@ async function syncChapterToSheets(sess, cap, opts){
       mode: 'no-cors',
       body: JSON.stringify({rows: rows}),
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      signal: AbortSignal.timeout(30000)
+      signal: AbortSignal.timeout(50000)
     });
     delete PENDING_CHAPTER_SYNCS[cap];
+    delete RETRY_COUNT[cap];
     LAST_SYNC_TIME = Date.now();
     setChapterSyncBadge(cap, 'ok');
     if(!opts.silent) toast('↑ Sección sincronizada con Sheets ('+rows.length+' ítems)');
     return true;
   }catch(e){
-    PENDING_CHAPTER_SYNCS[cap] = true;
-    console.warn('Sync error (cap: '+cap+'):', e.message);
-    setChapterSyncBadge(cap, 'error');
-    if(!opts.silent) toast('⚠ Sin conexión — se reintentará automáticamente');
+    RETRY_COUNT[cap] = (RETRY_COUNT[cap]||0) + 1;
+    console.warn('Sync error (cap: '+cap+'), intento '+RETRY_COUNT[cap]+':', e.message);
+    if(RETRY_COUNT[cap] >= MAX_AUTO_RETRIES){
+      // Dejamos de bombardear el servidor: probablemente SÍ llegó (no-cors
+      // no permite confirmarlo con certeza), simplemente el navegador tarda
+      // en darse por satisfecho. Esperamos a que el usuario sincronice esta
+      // sección manualmente si de verdad hace falta.
+      delete PENDING_CHAPTER_SYNCS[cap];
+      setChapterSyncBadge(cap, 'stalled');
+      if(!opts.silent) toast('⚠ Verifica en Sheets — probablemente sí se guardó, deja de reintentar solo');
+    } else {
+      PENDING_CHAPTER_SYNCS[cap] = true;
+      setChapterSyncBadge(cap, 'error');
+      if(!opts.silent) toast('⚠ Sin confirmación — reintentando ('+RETRY_COUNT[cap]+'/'+MAX_AUTO_RETRIES+')');
+    }
     return false;
   }finally{
     delete SYNCING_CHAPTERS[cap];
@@ -488,6 +502,7 @@ function setChapterSyncBadge(cap, status){
   if(status==='ok'){ badge.textContent = '✓ Sincronizado'; badge.style.color = 'var(--c-cumple)'; }
   else if(status==='error'){ badge.textContent = '⚠ Reintentando…'; badge.style.color = 'var(--c-nocumple)'; }
   else if(status==='sending'){ badge.textContent = '↑ Enviando…'; badge.style.color = 'var(--text-faint)'; }
+  else if(status==='stalled'){ badge.textContent = '⚠ Verificar en Sheets'; badge.style.color = 'var(--c-nocumple)'; }
   clearTimeout(badge._t);
   if(status==='ok'){ badge._t = setTimeout(function(){ badge.textContent=''; }, 4000); }
 }
@@ -1167,6 +1182,7 @@ function renderChapterBody(ci, forceShowAll){
   if(syncBtn){
     syncBtn.onclick = function(e){
       e.stopPropagation();
+      delete RETRY_COUNT[cap]; // un reenvío manual siempre se intenta, sin límite previo
       syncBtn.textContent = '↑ Enviando…';
       syncBtn.disabled = true;
       syncChapterToSheets(sess, cap).then(function(){

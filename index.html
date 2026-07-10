@@ -441,7 +441,7 @@ async function syncChapterToSheets(sess, cap, opts){
       mode: 'no-cors',
       body: JSON.stringify({rows: rows}),
       headers: {'Content-Type': 'text/plain;charset=utf-8'},
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(30000)
     });
     delete PENDING_CHAPTER_SYNCS[cap];
     LAST_SYNC_TIME = Date.now();
